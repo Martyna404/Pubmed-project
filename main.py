@@ -2,6 +2,10 @@ from Bio import Entrez
 import pandas as pd
 import re
 import time
+import plotly.express as px
+
+
+
 
 Entrez.email = "martynapradela@gmail.com"
 
@@ -15,7 +19,7 @@ def get_pmids():
     delay = 1  
 
     for start in range(0, max_records, size):
-        stream = Entrez.esearch(db="pubmed", term="coronary heart disease risk factor", retstart=start, retmax=size, sort="relevance")
+        stream = Entrez.esearch(db="pubmed", term="python", retstart=start, retmax=size, sort="relevance")
         results = Entrez.read(stream)
         pmids = results.get("IdList", [])
         total_pmids.extend(pmids)
@@ -65,7 +69,7 @@ def get_data():
 
         abstract_text = ''
         links_in_abstract = 'No Abstract'
-        git_hub_links = 'No github links'  # Zainicjalizuj zmienną na początku pętli
+        git_hub_links = 'No github links'  
 
         if 'Abstract' in article['MedlineCitation']['Article']:
             abstract = article['MedlineCitation']['Article']['Abstract']['AbstractText']
@@ -99,13 +103,29 @@ def get_data():
     df = pd.DataFrame(all_articles_data)
     
     
-    df.to_csv('coronaryheartdiseaseriskfactor.csv', index=False)
+    df.to_csv('python.csv', index=False)
     
-    print(df)
+    #print(df)
+    
+    
+    create_github_plot(df)
     return df
 
 
+
+def create_github_plot(df):
+    df['Has GitHub Link'] = df['Github links'].apply(lambda x: 1 if 'https://github.com' in x else 0)
+    grouped_df = df.groupby('Publication Date')['Has GitHub Link'].sum().reset_index()
+    fig = px.bar(grouped_df, x='Publication Date', y='Has GitHub Link', title='Github links per year')
+    fig.update_layout(yaxis_range=[0,None])
+    fig.write_image('python.png')  
+      
+
+
+
 df = get_data()
+
+
 
 
 
