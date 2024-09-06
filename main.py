@@ -4,9 +4,6 @@ import re
 import time
 import plotly.express as px
 
-
-
-
 Entrez.email = "martynapradela@gmail.com"
 
 def clean_links(links):
@@ -19,7 +16,7 @@ def get_pmids():
     delay = 1  
 
     for start in range(0, max_records, size):
-        stream = Entrez.esearch(db="pubmed", term="python", retstart=start, retmax=size, sort="relevance")
+        stream = Entrez.esearch(db="pubmed", term="breast cancer", retstart=start, retmax=size, sort="relevance")
         results = Entrez.read(stream)
         pmids = results.get("IdList", [])
         total_pmids.extend(pmids)
@@ -103,28 +100,35 @@ def get_data():
     df = pd.DataFrame(all_articles_data)
     
     
-    df.to_csv('python.csv', index=False)
+    #df.to_csv('python.csv', index=False)
     
     #print(df)
     
     
     create_github_plot(df)
+    creat_country_plot(df)
     return df
-
-
 
 def create_github_plot(df):
     df['Has GitHub Link'] = df['Github links'].apply(lambda x: 1 if 'https://github.com' in x else 0)
     grouped_df = df.groupby('Publication Date')['Has GitHub Link'].sum().reset_index()
     fig = px.bar(grouped_df, x='Publication Date', y='Has GitHub Link', title='Github links per year')
     fig.update_layout(yaxis_range=[0,None])
-    fig.write_image('python.png')  
-      
+    #fig.write_image('python.png')  
 
+def creat_country_plot(df):
+    
+    grouped_df = df.groupby('Country').size().reset_index(name='Count')
+    fig = px.bar(grouped_df, x='Country', y='Count', title='Content per Country')
+    fig.update_layout(yaxis_range=[0, None])
+    fig.write_image('breastcancer_contry.png')
+    
+    
 
+    
+    
 
 df = get_data()
-
 
 
 
