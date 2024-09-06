@@ -8,8 +8,6 @@ Entrez.email = "martynapradela@gmail.com"
 def clean_links(links):
     return [link.rstrip(').],') for link in links]
 
-
-
 def get_pmids():
     total_pmids = []
     size = 1000  
@@ -17,16 +15,14 @@ def get_pmids():
     delay = 1  
 
     for start in range(0, max_records, size):
-        stream = Entrez.esearch(db="pubmed", term="github", retstart=start, retmax=size, sort="relevance")
+        stream = Entrez.esearch(db="pubmed", term="coronary heart disease risk factor", retstart=start, retmax=size, sort="relevance")
         results = Entrez.read(stream)
         pmids = results.get("IdList", [])
         total_pmids.extend(pmids)
 
-        
         time.sleep(delay)
 
     return total_pmids
-
 
 def get_data():
     pmids = get_pmids()
@@ -69,6 +65,8 @@ def get_data():
 
         abstract_text = ''
         links_in_abstract = 'No Abstract'
+        git_hub_links = 'No github links'  # Zainicjalizuj zmienną na początku pętli
+
         if 'Abstract' in article['MedlineCitation']['Article']:
             abstract = article['MedlineCitation']['Article']['Abstract']['AbstractText']
             if isinstance(abstract, list):
@@ -78,7 +76,6 @@ def get_data():
             cleaned_links = clean_links(links)
             links_in_abstract = ", ".join(cleaned_links) if cleaned_links else 'No links found'
 
-            git_hub_links = 'No github links'
             git_hub = re.findall(r'https://github\S+', abstract_text)
             cleaned_git_hub_links = clean_links(git_hub)
             git_hub_links = ", ".join(cleaned_git_hub_links) if cleaned_git_hub_links else 'No github links'
@@ -88,7 +85,7 @@ def get_data():
             'Abstract Links': links_in_abstract,
             'Github links': git_hub_links,
             'DOI URL': doi_url,
-            'Title': title,
+            'Title':  title,
             'Publication Year': publication_type,
             'Authors': authors,
             'Country': country,
@@ -102,13 +99,14 @@ def get_data():
     df = pd.DataFrame(all_articles_data)
     
     
-    df.to_csv('pubmed.csv', index=False)
+    df.to_csv('coronaryheartdiseaseriskfactor.csv', index=False)
     
     print(df)
     return df
 
 
 df = get_data()
+
 
 
 
