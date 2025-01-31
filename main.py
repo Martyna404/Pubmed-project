@@ -13,6 +13,8 @@ import streamlit as st
 from Bio import Entrez
 from matplotlib.colors import LinearSegmentedColormap
 from wordcloud import WordCloud
+from bs4 import BeautifulSoup
+from urllib.parse import unquote
 
 
 Entrez.email = "martynapradela@gmail.com"
@@ -52,7 +54,6 @@ def log_search_time(logger, start_time):
     logger.info(f"Łączny czas pobierania danych: {total_time:.2f} sekundy.")
 
 
-# Funkcja obsługująca zapytania z ponawianiem
 def fetch_with_retry(fetch_function, *args, max_retries=5, logger=None, **kwargs):
     for attempt in range(1, max_retries + 1):
         try:
@@ -82,11 +83,15 @@ def fetch_keywords(pmid):
         handle.close()
 
         article = records["PubmedArticle"][0]
-        keywords_list = article["MedlineCitation"]["KeywordList"]
+        keywords_list = article["MedlineCitation"].get("KeywordList", [])
 
-        if keywords_list:
-            return "; ".join([kw for sublist in keywords_list for kw in sublist]) 
-        return "Brak słów kluczowych"
+        clean_keywords = []
+        for sublist in keywords_list:
+            for kw in sublist:
+                clean_text = BeautifulSoup(str(kw), "html.parser").get_text()  # Usunięcie tagów HTML
+                clean_keywords.append(clean_text.strip())
+
+        return "; ".join(clean_keywords) if clean_keywords else "Brak słów kluczowych"
     except Exception as e:
         return "Błąd pobierania"
 
@@ -140,16 +145,16 @@ def fetch_articles_with_details(pmids, start_year, end_year, logger=None, progre
                             for author in article["MedlineCitation"]["Article"].get("AuthorList", [])
                         ])
 
-                        #Pobieranie słów kluczowych
+                        # Pobieranie słów kluczowych
                         keywords = set()
                         if "KeywordList" in article["MedlineCitation"]:
                             for kw_list in article["MedlineCitation"]["KeywordList"]:
-                                if isinstance(kw_list, list):
-                                    keywords.update(str(kw) for kw in kw_list)  
-                                else:
-                                    keywords.add(str(kw_list))  
+                                for kw in kw_list:
+                                    clean_text = BeautifulSoup(str(kw), "html.parser").get_text()
+                                    clean_text = unquote(clean_text)  
+                                    keywords.add(clean_text.strip())  
 
-                        #Pobieranie MeshHeadingList
+                        # Pobieranie MeshHeadingList
                         if "MeshHeadingList" in article["MedlineCitation"]:
                             mesh_terms = article["MedlineCitation"]["MeshHeadingList"]
                             keywords.update(str(term["DescriptorName"]) for term in mesh_terms)
@@ -157,12 +162,11 @@ def fetch_articles_with_details(pmids, start_year, end_year, logger=None, progre
                         all_keywords.update(keywords)  
                         keywords_text = "; ".join(keywords) if keywords else "No Keywords"
 
-                        
+                        # Pobieranie abstraktu i linków GitHub
                         abstract_text = " ".join(article["MedlineCitation"]["Article"]["Abstract"]["AbstractText"]) if "Abstract" in article["MedlineCitation"]["Article"] else ""
                         github_links = extract_github_links(abstract_text)
                         has_github_links = "Yes" if "https://github.com" in github_links else "No"
 
-                        
                         if has_github_links == "Yes":
                             github_repos_by_year[pub_date_year] = github_repos_by_year.get(pub_date_year, 0) + 1
 
@@ -195,12 +199,10 @@ def fetch_articles_with_details(pmids, start_year, end_year, logger=None, progre
 
     logger.info(f"Łącznie pobrano szczegóły dla {len(all_articles_data)} artykułów.")
 
-   
     st.session_state["all_keywords"] = " ".join(all_keywords) if all_keywords else "No Keywords"
     st.session_state["github_repos_by_year"] = github_repos_by_year
 
     return all_articles_data
-
 
 
 def get_pmids_with_full_pagination(term, start_year, end_year, logger=None, progress_bar=None, total_steps=1, current_step=0):
@@ -375,15 +377,17 @@ def create_map(dataframe):
     ax.set_axis_off()
     return fig 
 
-
 ##########STREAMLIT###############################
 
+# Nagłówek aplikacji
 st.title("PubMed Data Viewer")
 
-term = st.text_input("Wprowadź termin wyszukiwania:", value="heart")
-start_year = st.number_input("Podaj początkowy rok:", value=2000, step=1)
-end_year = st.number_input("Podaj końcowy rok:", value=2023, step=1)
+# Formularz wyszukiwania
+term = st.text_input("Wprowadź termin wyszukiwania:", value="heart cancer", key="search_term_input")
+start_year = st.number_input("Podaj początkowy rok:", value=2000, step=1, key="start_year_input")
+end_year = st.number_input("Podaj końcowy rok:", value=2023, step=1, key="end_year_input")
 
+# Inicjalizacja zmiennych w session_state
 if "articles_data" not in st.session_state:
     st.session_state["articles_data"] = None
 if "publications_by_year" not in st.session_state:
@@ -395,15 +399,11 @@ if "all_keywords" not in st.session_state:
 if "wordcloud_fig" not in st.session_state:
     st.session_state["wordcloud_fig"] = None  
 
+# Pobieranie danych po kliknięciu przycisku
 if st.button("Wyszukaj"):
     with st.spinner("Pobieranie danych..."):
         try:
-            logger, start_time = setup_logger(term, start_year, end_year)  
-
-            if logger is None:
-                st.error("Błąd: logger nie został poprawnie zainicjalizowany.")
-                st.stop()
-
+            logger, start_time = setup_logger(term, start_year, end_year)
             progress_bar = st.progress(0)
 
             pmids, duplicate_count = get_pmids_with_full_pagination(
@@ -415,7 +415,6 @@ if st.button("Wyszukaj"):
             )
 
             progress_bar.empty()
-
             log_search_time(logger, start_time)
 
             publications_by_year = {}
@@ -437,7 +436,7 @@ if st.button("Wyszukaj"):
             st.session_state["publications_by_year"] = publications_by_year
             st.session_state["github_repos_by_year"] = github_repos_by_year
 
-            if not st.session_state["all_keywords"]:  
+            if not st.session_state["all_keywords"]:
                 st.session_state["all_keywords"] = " ".join(all_keywords) if all_keywords else "No Keywords"
 
             if st.session_state["all_keywords"] and st.session_state["all_keywords"] != "No Keywords":
@@ -445,74 +444,114 @@ if st.button("Wyszukaj"):
                 fig, ax = plt.subplots(figsize=(10, 5))
                 ax.imshow(wordcloud, interpolation="bilinear")
                 ax.axis("off")
-                st.session_state["wordcloud_fig"] = fig  
+                st.session_state["wordcloud_fig"] = fig
             else:
                 st.session_state["wordcloud_fig"] = None  
 
         except Exception as e:
             st.error(f"Wystąpił błąd: {e}")
 
+# Jeśli są dane, wyświetl wykresy
 if st.session_state["articles_data"]:
     df = pd.DataFrame(st.session_state["articles_data"])
-
-    st.subheader("Liczba publikacji na rok")
-    
     unique_countries = sorted(df["Country"].dropna().unique())
     unique_countries.insert(0, "Wszystkie kraje")
+    all_keywords_list = sorted(set("; ".join(df["Keywords"].dropna()).split("; ")))
 
-    selected_country = st.selectbox("Wybierz kraj:", unique_countries, index=0)
+    ## Filtracja po kraju**
+    st.subheader("Filtracja po kraju")
+    selected_country = st.selectbox("Wybierz kraj:", unique_countries, index=0, key="country_filter")
 
-    if selected_country != "Wszystkie kraje":
-        df_filtered = df[df["Country"] == selected_country]
-        chart_title = f"Liczba publikacji w bazie PubMed dla {selected_country} na przestrzeni lat"
-        filename = f"wykres_slupkowy_{selected_country.replace(' ', '_')}.png"
-    else:
-        df_filtered = df
-        chart_title = "Liczba publikacji w bazie PubMed na przestrzeni lat"
-        filename = "wykres_slupkowy_wszystkie_kraje.png"
-
+    df_filtered = df if selected_country == "Wszystkie kraje" else df[df["Country"] == selected_country]
+    chart_title = "Liczba publikacji na przestrzeni lat" if selected_country == "Wszystkie kraje" else f"Liczba publikacji dla {selected_country}"
     publications_by_year = df_filtered["Publication Date"].value_counts().sort_index()
 
-    fig_interactive = px.bar(
-        x=publications_by_year.index.astype(int),
-        y=publications_by_year.values,
-        labels={"x": "Rok", "y": "Liczba publikacji"},
-        title=chart_title,
-        color_discrete_sequence=["deepskyblue"]
-    )
+    if not publications_by_year.empty:
+        fig_country = px.bar(x=publications_by_year.index.astype(int), y=publications_by_year.values,
+                             labels={"x": "Rok", "y": "Liczba publikacji"}, title=chart_title,
+                             color_discrete_sequence=["deepskyblue"])
+        fig_country.update_xaxes(type="linear", dtick=1)
+        st.plotly_chart(fig_country, use_container_width=True)
 
-    fig_interactive.update_layout(
-        xaxis=dict(tickmode="linear", dtick=1),
-        yaxis=dict(automargin=True)
-    )
+        buf_country = io.BytesIO()
+        fig_country.write_image(buf_country, format="png", scale=2)
+        buf_country.seek(0)
+        st.download_button("Pobierz wykres jako PNG", buf_country, f"wykres_kraj.png", "image/png", key="download_country")
 
-    st.plotly_chart(fig_interactive, use_container_width=True)
+    #Filtracja po słowach kluczowych**
+    st.subheader("Filtracja po słowach kluczowych")
+    selected_keywords = st.multiselect("Wybierz słowa kluczowe:", all_keywords_list, key="keyword_filter")
 
-    buf_chart = io.BytesIO()
-    fig_interactive.write_image(buf_chart, format="png", scale=2)
-    buf_chart.seek(0)
+    df_keyword_filtered = df[df["Keywords"].apply(lambda x: any(kw in x for kw in selected_keywords))] if selected_keywords else df
+    publications_by_year_keyword = df_keyword_filtered["Publication Date"].value_counts().sort_index()
 
-    st.download_button("Pobierz wykres jako PNG", buf_chart, filename, "image/png", key="download_interactive_chart")
+    keyword_title = f"Liczba publikacji według słów kluczowych: {', '.join(selected_keywords)}" if selected_keywords else "Liczba publikacji według słów kluczowych"
 
-    st.subheader("Liczba znalezionych repozytoriów GitHub / rok")
+    if not publications_by_year_keyword.empty:
+        fig_keyword = px.bar(
+            x=publications_by_year_keyword.index.astype(int), 
+            y=publications_by_year_keyword.values,
+            labels={"x": "Rok", "y": "Liczba publikacji"}, 
+            title=keyword_title,
+            color_discrete_sequence=["deepskyblue"]
+        )
+        st.plotly_chart(fig_keyword, use_container_width=True)
+
+        
+        buf_keyword = io.BytesIO()
+        fig_keyword.write_image(buf_keyword, format="png", scale=2)
+        buf_keyword.seek(0)
+        st.download_button("Pobierz wykres jako PNG", buf_keyword, "filtracja_slow_kluczowych.png", "image/png", key="download_keyword_chart")
+
+
+    ##Filtracja po kraju i słowach kluczowyc
+    st.subheader("Filtracja po kraju i słowach kluczowych")
+    selected_country_2 = st.selectbox("Wybierz kraj:", unique_countries, index=0, key="country_keyword_filter")
+    selected_keywords_2 = st.multiselect("Wybierz słowa kluczowe:", all_keywords_list, key="keyword_country_filter")
+
+    df_combined_filtered = df if selected_country_2 == "Wszystkie kraje" else df[df["Country"] == selected_country_2]
+    if selected_keywords_2:
+        df_combined_filtered = df_combined_filtered[df_combined_filtered["Keywords"].apply(lambda x: any(kw in x for kw in selected_keywords_2))]
+
+    publications_by_year_combined = df_combined_filtered["Publication Date"].value_counts().sort_index()
+
+    combined_title = f"Liczba publikacji według kraju: {selected_country_2} i słów kluczowych: {', '.join(selected_keywords_2)}" if selected_keywords_2 else f"Liczba publikacji według kraju: {selected_country_2}"
+
+    if not publications_by_year_combined.empty:
+        fig_combined = px.bar(
+            x=publications_by_year_combined.index.astype(int), 
+            y=publications_by_year_combined.values,
+            labels={"x": "Rok", "y": "Liczba publikacji"}, 
+            title=combined_title,
+            color_discrete_sequence=["deepskyblue"]
+        )
+        st.plotly_chart(fig_combined, use_container_width=True)
+
+        
+        buf_combined = io.BytesIO()
+        fig_combined.write_image(buf_combined, format="png", scale=2)
+        buf_combined.seek(0)
+        st.download_button("Pobierz wykres jako PNG", buf_combined, "filtracja_kraj_slow_kluczowych.png", "image/png", key="download_combined_chart")
+
+    #Wykres repozytoriów GitHub
+    st.subheader("Liczba znalezionych repozytoriów GitHub w określonym przedziale czasowym")
     github_repos_by_year = st.session_state["github_repos_by_year"]
 
     if github_repos_by_year:
-        fig_github = px.bar(
-            x=list(map(int, github_repos_by_year.keys())),
-            y=list(github_repos_by_year.values()),  
-            labels={"x": "Rok", "y": "Liczba repozytoriów GitHub"},
-            title="Liczba znalezionych repozytoriów GitHub / rok",
-            color_discrete_sequence=["deepskyblue"]
-        )
-        fig_github.update_layout(
-            xaxis=dict(tickmode="linear", dtick=1),
-            yaxis=dict(automargin=True)
-        )
-
+        fig_github = px.bar(x=list(map(int, github_repos_by_year.keys())), y=list(github_repos_by_year.values()),
+                            labels={"x": "Rok", "y": "Liczba repozytoriów GitHub"}, title="Liczba repozytoriów GitHub w określonym przedziale czasowym",
+                            color_discrete_sequence=["deepskyblue"])
+        fig_github.update_xaxes(type="linear", dtick=1)
         st.plotly_chart(fig_github, use_container_width=True)
 
-    st.write("### Mapa publikacji według krajów ###")
+        buf_github = io.BytesIO()
+        fig_github.write_image(buf_github, format="png", scale=2)
+        buf_github.seek(0)
+        st.download_button("Pobierz wykres jako PNG", buf_github, f"wykres_github.png", "image/png", key="download_github")
+
+
+    # Mapa świata 
+    st.write("### Mapa globalnego udziału krajów w publikacjach naukowych ###")
     map_figure = create_map(df)
     st.pyplot(map_figure)
 
@@ -521,7 +560,9 @@ if st.session_state["articles_data"]:
     buf_map.seek(0)
     st.download_button("Pobierz mapę jako PNG", buf_map, "mapa_publikacji.png", "image/png", key="download_map_chart")
 
-    st.write("### TOP 5 krajów z największą liczbą publikacji")
+
+    #TOP 5
+    st.write(f"### TOP 5 krajów z największym udziałem w tworzeniu zapytania: {term}")
     if "articles_data" in st.session_state and st.session_state["articles_data"]:
         df_countries = pd.DataFrame(st.session_state["articles_data"])
         if "Country" in df_countries.columns:
@@ -574,8 +615,6 @@ if st.session_state["articles_data"]:
         st.download_button("Pobierz chmurę słów jako PNG", buf_wordcloud, "wordcloud.png", "image/png")
     else:
         st.write("Brak dostępnych słów kluczowych do wygenerowania chmury słów.")
-
-
 
 """ 
 tylko dla id=1
