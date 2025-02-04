@@ -1,9 +1,11 @@
-import io
+
+           import io
 import logging
 import os
 import re
 import time
 from urllib.error import HTTPError
+import numpy as np
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -12,12 +14,14 @@ import plotly.express as px
 import streamlit as st
 from Bio import Entrez
 from matplotlib.colors import LinearSegmentedColormap
+import matplotlib.colors as mcolors
 from wordcloud import WordCloud
 from bs4 import BeautifulSoup
 from urllib.parse import unquote
 
 
 Entrez.email = "martynapradela@gmail.com"
+Entrez.api_key="85e98bf41fa065ef8d3c3dd77ddaa6503b09"
 
 def setup_logger(term, start_year, end_year):
     log_folder = f"log-{term}"
@@ -88,7 +92,7 @@ def fetch_keywords(pmid):
         clean_keywords = []
         for sublist in keywords_list:
             for kw in sublist:
-                clean_text = BeautifulSoup(str(kw), "html.parser").get_text()  # Usunięcie tagów HTML
+                clean_text = BeautifulSoup(str(kw), "html.parser").get_text()  
                 clean_keywords.append(clean_text.strip())
 
         return "; ".join(clean_keywords) if clean_keywords else "Brak słów kluczowych"
@@ -115,6 +119,8 @@ def extract_github_links(abstract):
 
 
 def fetch_articles_with_details(pmids, start_year, end_year, logger=None, progress_bar=None, total_steps=1, current_step=0):
+    if not pmids:
+        raise ValueError("Lista PMIDs jest pusta. Nie można pobrać artykułów.")
     all_articles_data = []
     all_keywords = set()  
     github_repos_by_year = {}  
@@ -353,36 +359,82 @@ def create_interactive_bar_chart(data, output_file=None, logger=None):
             logger.error(f"Błąd podczas tworzenia lub zapisu wykresu: {e}")
         raise
 
-def create_map(dataframe):  
-    country_counts = dataframe['Country'].value_counts().reset_index()
+def aggregate_publications_by_country(articles_data):
+    """
+    Agreguje liczbę publikacji na kraj na podstawie pobranych danych z PubMed.
+    """
+    df = pd.DataFrame(articles_data)
+    country_counts = df['Country'].value_counts().reset_index()
     country_counts.columns = ['Country', 'Count']
-    world = gpd.read_file("C:/Users/Martyna/OneDrive/Pulpit/web scraping/ne_110m_admin_0_countries.shp")
-    world = world.merge(country_counts, left_on='NAME', right_on='Country', how='left')
-    world['Count'] = world['Count'].fillna(0)
-    custom_cmap = LinearSegmentedColormap.from_list(
-        "custom_cmap",
-        ["grey", "yellow", "blue", "green"]
+    return country_counts
+
+
+
+
+def create_choropleth_map(dataframe):
+    max_count = dataframe["Count"].max()
+
+    # Skala kolorów od białego do bordowego
+    color_scale = [
+        (0.0, "#ffffff"),  # Biały (0 publikacji)
+        (0.02, "#ffebe6"), # Bardzo jasny róż
+        (0.05, "#ffcccc"), # Jasny róż
+        (0.10, "#ff9999"), # Pastelowy róż
+        (0.20, "#ff6666"), # Czerwonawy róż
+        (0.30, "#ff3333"), # Jasna czerwień
+        (0.40, "#cc0000"), # Intensywna czerwień
+        (0.50, "#990000"), # Ciemnoczerwony
+        (0.60, "#660000"), # Bordowy
+        (0.75, "#4d0000"), # Bardzo ciemny bordowy
+        (1.0, "#1a0000")   # Niemal czarny (maksymalna liczba publikacji)
+    ]
+
+    # Generowanie wartości na skali zaokrąglonych do tysięcy
+    num_ticks = 7  # Liczba wartości na skali
+    tick_values = np.linspace(0, max_count, num=num_ticks)  # Równomierne wartości
+    tick_values_rounded = np.round(tick_values, -3)  # Zaokrąglenie do tysięcy
+
+    fig = px.choropleth(
+        dataframe,
+        locations="Country",
+        locationmode="country names",
+        color="Count",
+        title="Globalny udział krajów w publikacjach naukowych",
+        color_continuous_scale=color_scale
     )
 
-    fig, ax = plt.subplots(1, 1, figsize=(15, 10))
-    world.boundary.plot(ax=ax, linewidth=1)
-    world.plot(
-        column='Count',
-        ax=ax,
-        legend=True,
-        cmap=custom_cmap,
-        legend_kwds={'label': "Number of Publications", 'shrink': 0.7}
+    fig.update_layout(
+        geo=dict(showcoastlines=True),
+        coloraxis_colorbar=dict(
+            title="Liczba publikacji",
+            tickvals=tick_values_rounded.tolist(),  # Zaokrąglone wartości do tysięcy
+            ticktext=[f"{int(x):,}".replace(",", " ") for x in tick_values_rounded]  # Formatowanie jako 10 000, 20 000
+        )
     )
-    ax.set_title("Number of Publications by Country", fontsize=16)
-    ax.set_axis_off()
-    return fig 
+
+    return fig
+
+
 
 ##########STREAMLIT###############################
 
-# Nagłówek aplikacji
+
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+import io
+from Bio import Entrez
+from bs4 import BeautifulSoup
+from urllib.parse import unquote
+
+# Funkcje pomocnicze (np. setup_logger, get_pmids_with_full_pagination, fetch_articles_with_details, itd.)
+# Muszą być zdefiniowane wcześniej w kodzie.
+
 st.title("PubMed Data Viewer")
 
-# Formularz wyszukiwania
+# Inputy użytkownika
 term = st.text_input("Wprowadź termin wyszukiwania:", value="heart cancer", key="search_term_input")
 start_year = st.number_input("Podaj początkowy rok:", value=2000, step=1, key="start_year_input")
 end_year = st.number_input("Podaj końcowy rok:", value=2023, step=1, key="end_year_input")
@@ -397,19 +449,26 @@ if "github_repos_by_year" not in st.session_state:
 if "all_keywords" not in st.session_state:
     st.session_state["all_keywords"] = None
 if "wordcloud_fig" not in st.session_state:
-    st.session_state["wordcloud_fig"] = None  
+    st.session_state["wordcloud_fig"] = None
+if "pmids" not in st.session_state:
+    st.session_state["pmids"] = None
 
-# Pobieranie danych po kliknięciu przycisku
+# Przycisk "Wyszukaj"
 if st.button("Wyszukaj"):
     with st.spinner("Pobieranie danych..."):
         try:
             logger, start_time = setup_logger(term, start_year, end_year)
             progress_bar = st.progress(0)
 
+            # Pobierz PMIDs
             pmids, duplicate_count = get_pmids_with_full_pagination(
                 term, start_year, end_year, logger, progress_bar=progress_bar, total_steps=2, current_step=0
             )
 
+            # Przechowaj PMIDs w session_state
+            st.session_state["pmids"] = pmids
+
+            # Pobierz szczegóły artykułów
             articles_data = fetch_articles_with_details(
                 pmids, start_year, end_year, logger, progress_bar=progress_bar, total_steps=2, current_step=1
             )
@@ -417,6 +476,7 @@ if st.button("Wyszukaj"):
             progress_bar.empty()
             log_search_time(logger, start_time)
 
+            # Przetwarzanie danych
             publications_by_year = {}
             github_repos_by_year = {}
             all_keywords = []
@@ -432,6 +492,7 @@ if st.button("Wyszukaj"):
                     if has_github:
                         github_repos_by_year[pub_date] = github_repos_by_year.get(pub_date, 0) + 1
 
+            # Przechowaj dane w session_state
             st.session_state["articles_data"] = articles_data
             st.session_state["publications_by_year"] = publications_by_year
             st.session_state["github_repos_by_year"] = github_repos_by_year
@@ -446,19 +507,19 @@ if st.button("Wyszukaj"):
                 ax.axis("off")
                 st.session_state["wordcloud_fig"] = fig
             else:
-                st.session_state["wordcloud_fig"] = None  
+                st.session_state["wordcloud_fig"] = None
 
         except Exception as e:
             st.error(f"Wystąpił błąd: {e}")
 
-# Jeśli są dane, wyświetl wykresy
+# Wyświetlanie danych po wyszukiwaniu
 if st.session_state["articles_data"]:
     df = pd.DataFrame(st.session_state["articles_data"])
     unique_countries = sorted(df["Country"].dropna().unique())
     unique_countries.insert(0, "Wszystkie kraje")
     all_keywords_list = sorted(set("; ".join(df["Keywords"].dropna()).split("; ")))
 
-    ## Filtracja po kraju**
+    # Filtracja po kraju
     st.subheader("Filtracja po kraju")
     selected_country = st.selectbox("Wybierz kraj:", unique_countries, index=0, key="country_filter")
 
@@ -467,18 +528,22 @@ if st.session_state["articles_data"]:
     publications_by_year = df_filtered["Publication Date"].value_counts().sort_index()
 
     if not publications_by_year.empty:
-        fig_country = px.bar(x=publications_by_year.index.astype(int), y=publications_by_year.values,
-                             labels={"x": "Rok", "y": "Liczba publikacji"}, title=chart_title,
-                             color_discrete_sequence=["deepskyblue"])
+        fig_country = px.bar(
+            x=publications_by_year.index.astype(int), 
+            y=publications_by_year.values,
+            labels={"x": "Rok", "y": "Liczba publikacji"}, 
+            title=chart_title,
+            color_discrete_sequence=["deepskyblue"]
+        )
         fig_country.update_xaxes(type="linear", dtick=1)
         st.plotly_chart(fig_country, use_container_width=True)
 
         buf_country = io.BytesIO()
         fig_country.write_image(buf_country, format="png", scale=2)
         buf_country.seek(0)
-        st.download_button("Pobierz wykres jako PNG", buf_country, f"wykres_kraj.png", "image/png", key="download_country")
+        
 
-    #Filtracja po słowach kluczowych**
+    # Filtracja po słowach kluczowych
     st.subheader("Filtracja po słowach kluczowych")
     selected_keywords = st.multiselect("Wybierz słowa kluczowe:", all_keywords_list, key="keyword_filter")
 
@@ -497,14 +562,12 @@ if st.session_state["articles_data"]:
         )
         st.plotly_chart(fig_keyword, use_container_width=True)
 
-        
         buf_keyword = io.BytesIO()
         fig_keyword.write_image(buf_keyword, format="png", scale=2)
         buf_keyword.seek(0)
-        st.download_button("Pobierz wykres jako PNG", buf_keyword, "filtracja_slow_kluczowych.png", "image/png", key="download_keyword_chart")
+        
 
-
-    ##Filtracja po kraju i słowach kluczowyc
+    # Filtracja po kraju i słowach kluczowych
     st.subheader("Filtracja po kraju i słowach kluczowych")
     selected_country_2 = st.selectbox("Wybierz kraj:", unique_countries, index=0, key="country_keyword_filter")
     selected_keywords_2 = st.multiselect("Wybierz słowa kluczowe:", all_keywords_list, key="keyword_country_filter")
@@ -527,76 +590,51 @@ if st.session_state["articles_data"]:
         )
         st.plotly_chart(fig_combined, use_container_width=True)
 
-        
         buf_combined = io.BytesIO()
         fig_combined.write_image(buf_combined, format="png", scale=2)
         buf_combined.seek(0)
-        st.download_button("Pobierz wykres jako PNG", buf_combined, "filtracja_kraj_slow_kluczowych.png", "image/png", key="download_combined_chart")
-
-    #Wykres repozytoriów GitHub
+       
+    # Wykres repozytoriów GitHub
     st.subheader("Liczba znalezionych repozytoriów GitHub w określonym przedziale czasowym")
     github_repos_by_year = st.session_state["github_repos_by_year"]
 
     if github_repos_by_year:
-        fig_github = px.bar(x=list(map(int, github_repos_by_year.keys())), y=list(github_repos_by_year.values()),
-                            labels={"x": "Rok", "y": "Liczba repozytoriów GitHub"}, title="Liczba repozytoriów GitHub w określonym przedziale czasowym",
-                            color_discrete_sequence=["deepskyblue"])
+        fig_github = px.bar(
+            x=list(map(int, github_repos_by_year.keys())), 
+            y=list(github_repos_by_year.values()),
+            labels={"x": "Rok", "y": "Liczba repozytoriów GitHub"}, 
+            title="Liczba repozytoriów GitHub w określonym przedziale czasowym",
+            color_discrete_sequence=["deepskyblue"]
+        )
         fig_github.update_xaxes(type="linear", dtick=1)
         st.plotly_chart(fig_github, use_container_width=True)
 
         buf_github = io.BytesIO()
         fig_github.write_image(buf_github, format="png", scale=2)
         buf_github.seek(0)
-        st.download_button("Pobierz wykres jako PNG", buf_github, f"wykres_github.png", "image/png", key="download_github")
+        
 
-
-    # Mapa świata 
+    # Mapa globalnego udziału krajów
     st.write("### Mapa globalnego udziału krajów w publikacjach naukowych ###")
-    map_figure = create_map(df)
-    st.pyplot(map_figure)
+    df_countries = aggregate_publications_by_country(st.session_state["articles_data"])
+    map_figure = create_choropleth_map(df_countries)
+    st.plotly_chart(map_figure, use_container_width=True)
 
-    buf_map = io.BytesIO()
-    map_figure.savefig(buf_map, format="png", dpi=300, bbox_inches="tight")
-    buf_map.seek(0)
-    st.download_button("Pobierz mapę jako PNG", buf_map, "mapa_publikacji.png", "image/png", key="download_map_chart")
+    
 
-
-    #TOP 5
+    # TOP 5 krajów z największą liczbą publikacji
     st.write(f"### TOP 5 krajów z największym udziałem w tworzeniu zapytania: {term}")
+
     if "articles_data" in st.session_state and st.session_state["articles_data"]:
         df_countries = pd.DataFrame(st.session_state["articles_data"])
+        
         if "Country" in df_countries.columns:
             country_counts = df_countries["Country"].value_counts().reset_index()
             country_counts.columns = ["Kraj", "Liczba publikacji"]
             top_5_countries = country_counts.head(5)
 
-            table_html = top_5_countries.to_html(index=False, classes="styled-table")
-            st.markdown(
-                """
-                <style>
-                .styled-table {
-                    width: 50%;
-                    margin-left: auto;
-                    margin-right: auto;
-                    border-collapse: collapse;
-                    text-align: center;
-                    font-size: 16px;
-                }
-                .styled-table th, .styled-table td {
-                    border: 1px solid #ddd;
-                    padding: 10px;
-                    text-align: center;
-                }
-                .styled-table th {
-                    background-color: #f4f4f4;
-                    font-weight: bold;
-                }
-                </style>
-                """,
-                unsafe_allow_html=True
-            )
-
-            st.markdown(table_html, unsafe_allow_html=True)
+            # Wyświetlenie tabeli jako DataFrame
+            st.dataframe(top_5_countries, use_container_width=True)
 
         else:
             st.write("Brak danych o krajach.")
@@ -615,7 +653,6 @@ if st.session_state["articles_data"]:
         st.download_button("Pobierz chmurę słów jako PNG", buf_wordcloud, "wordcloud.png", "image/png")
     else:
         st.write("Brak dostępnych słów kluczowych do wygenerowania chmury słów.")
-
 """ 
 tylko dla id=1
 
